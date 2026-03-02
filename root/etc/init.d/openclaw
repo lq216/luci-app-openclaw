@@ -176,7 +176,7 @@ OC_GLOBAL="$OC_GLOBAL" \
 OC_DATA="$OC_DATA" \
 PATH="${NODE_BASE}/bin:${OC_GLOBAL}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 procd_set_param user openclaw
-procd_set_param respawn 3600 5 5
+procd_set_param respawn 3600 5 0
 procd_set_param stdout 1
 procd_set_param stderr 1
 procd_set_param pidfile /var/run/openclaw.pid
@@ -231,32 +231,23 @@ echo "正在调用 openclaw-env setup..."
 
 restart_gateway() {
 # 仅重启 Gateway procd 实例，不影响 Web PTY
-# 通过 ubus 发送 restart 信号给指定实例
+# 使用 stop+start 而非 kill，可重置 procd crash loop 计数器
 local port
 port=$(uci -q get openclaw.main.port || echo "18789")
 
-# 找到 gateway 进程 PID
-local gw_pid=""
-gw_pid=$(ubus call service list '{"name":"openclaw"}' 2>/dev/null | \
-	jsonfilter -e '$.openclaw.instances.gateway.pid' 2>/dev/null) || true
+# 停止 gateway 实例 (通过 ubus，不影响 PTY 实例)
+ubus call service stop '{"name":"openclaw","instance":"gateway"}' 2>/dev/null || true
 
-if [ -z "$gw_pid" ] || ! kill -0 "$gw_pid" 2>/dev/null; then
-	gw_pid=$(cat /var/run/openclaw.pid 2>/dev/null)
-fi
+# 等待端口释放
+local i=0
+while [ $i -lt 8 ]; do
+	netstat -tln 2>/dev/null | grep -q ":${port} " || break
+	sleep 1; i=$((i+1))
+done
 
-if [ -n "$gw_pid" ] && kill -0 "$gw_pid" 2>/dev/null; then
-	# 发送 SIGTERM，procd 会自动 respawn
-	kill "$gw_pid" 2>/dev/null
-	# 等待进程退出
-	local i=0
-	while kill -0 "$gw_pid" 2>/dev/null && [ $i -lt 10 ]; do
-		sleep 1; i=$((i+1))
-	done
-else
-	# 没有运行中的进程，触发 procd 启动
-	ubus call service start '{"name":"openclaw"}' 2>/dev/null || \
-		/etc/init.d/openclaw start >/dev/null 2>&1
-fi
+# 重新启动整个服务 (procd 会重建 gateway 实例，同时保留 PTY 实例)
+# procd 的 start_service 幂等：已运行的实例不会重复启动
+/etc/init.d/openclaw start >/dev/null 2>&1
 }
 
 status_service() {
