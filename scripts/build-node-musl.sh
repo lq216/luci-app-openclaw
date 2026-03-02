@@ -13,7 +13,35 @@ PKG_NAME="node-v${NODE_VER}-linux-arm64-musl"
 PKG_DIR="/tmp/${PKG_NAME}"
 mkdir -p "${PKG_DIR}/bin" "${PKG_DIR}/lib/node_modules" "${PKG_DIR}/include/node"
 
-cp "$(which node)" "${PKG_DIR}/bin/"
+# 复制 node 二进制
+cp "$(which node)" "${PKG_DIR}/bin/node.bin"
+chmod +x "${PKG_DIR}/bin/node.bin"
+
+# 收集 node 依赖的所有共享库 (Alpine node 是动态链接的)
+echo "=== Collecting shared libraries ==="
+LIB_DIR="${PKG_DIR}/lib"
+ldd "$(which node)" 2>/dev/null | while read -r line; do
+  # 解析 ldd 输出: libxxx.so => /usr/lib/libxxx.so (0x...)
+  lib_path=$(echo "$line" | grep -oE '/[^ ]+\.so[^ ]*' | head -1)
+  if [ -n "$lib_path" ] && [ -f "$lib_path" ]; then
+    cp -L "$lib_path" "$LIB_DIR/" 2>/dev/null || true
+    echo "  + $(basename "$lib_path")"
+  fi
+done
+# 确保 musl 动态链接器也在
+if [ -f /lib/ld-musl-aarch64.so.1 ]; then
+  cp -L /lib/ld-musl-aarch64.so.1 "$LIB_DIR/" 2>/dev/null || true
+  echo "  + ld-musl-aarch64.so.1"
+fi
+echo "Libraries collected: $(ls "$LIB_DIR"/*.so* 2>/dev/null | wc -l) files"
+
+# 创建 node wrapper 脚本 (设置 LD_LIBRARY_PATH 后执行真正的 node)
+cat > "${PKG_DIR}/bin/node" << 'NODEWRAPPER'
+#!/bin/sh
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+export LD_LIBRARY_PATH="${SELF_DIR}/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "${SELF_DIR}/node.bin" "$@"
+NODEWRAPPER
 chmod +x "${PKG_DIR}/bin/node"
 
 # 复制 npm
@@ -22,11 +50,19 @@ if [ -d /usr/lib/node_modules/npm ]; then
 fi
 
 # 创建 npm wrapper
-printf '#!/bin/sh\nexec "$(dirname "$0")/node" "$(dirname "$0")/../lib/node_modules/npm/bin/npm-cli.js" "$@"\n' \
-  > "${PKG_DIR}/bin/npm"
+cat > "${PKG_DIR}/bin/npm" << 'NPMWRAPPER'
+#!/bin/sh
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+export LD_LIBRARY_PATH="${SELF_DIR}/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "${SELF_DIR}/node.bin" "${SELF_DIR}/../lib/node_modules/npm/bin/npm-cli.js" "$@"
+NPMWRAPPER
 # 创建 npx wrapper
-printf '#!/bin/sh\nexec "$(dirname "$0")/node" "$(dirname "$0")/../lib/node_modules/npm/bin/npx-cli.js" "$@"\n' \
-  > "${PKG_DIR}/bin/npx"
+cat > "${PKG_DIR}/bin/npx" << 'NPXWRAPPER'
+#!/bin/sh
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+export LD_LIBRARY_PATH="${SELF_DIR}/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "${SELF_DIR}/node.bin" "${SELF_DIR}/../lib/node_modules/npm/bin/npx-cli.js" "$@"
+NPXWRAPPER
 chmod +x "${PKG_DIR}/bin/npm" "${PKG_DIR}/bin/npx"
 
 # 验证
