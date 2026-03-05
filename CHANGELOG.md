@@ -4,6 +4,36 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
+## [1.0.4] - 2026-03-05
+
+### 适配 OpenClaw 2026.3.2
+
+#### 破坏性变更修复
+- **tools.profile 默认值变更**: 2026.3.2 将 `tools.profile` 默认从 `coding` 改为 `messaging`
+  - `sync_uci_to_json()` 每次启动强制写入 `tools.profile=coding`
+  - `openclaw-env init_openclaw()` onboard 命令添加 `--tools-profile coding`
+  - `openclaw-env do_factory_reset()` onboard 命令添加 `--tools-profile coding`
+  - `oc-config.sh` 工厂重置 onboard 命令添加 `--tools-profile coding`
+  - `oc-config.sh` 工厂重置配置写入新增 `tools.profile=coding`
+- **ACP dispatch 默认启用**: 2026.3.2 默认开启 ACP dispatch，路由器内存有限可能导致 OOM
+  - `sync_uci_to_json()` 每次启动强制写入 `acp.dispatch.enabled=false`
+  - `openclaw-env do_factory_reset()` 配置写入新增 `acp.dispatch.enabled=false`
+  - `oc-config.sh` 工厂重置配置写入新增 `acp.dispatch.enabled=false`
+
+#### 新增
+- 健康检查集成 `openclaw config validate --json` 官方配置验证命令
+- 健康检查新增 `gateway health --json` CLI 深度检查 (v2026.3.2 HTTP `/health` 已被 SPA 接管)
+
+#### 修复
+- **Ollama 配置适配**: `api` 从废弃的 `openai-chat-completions` 改为原生 `ollama` API 类型
+- **Ollama baseUrl 格式**: 去掉 `/v1` 后缀，使用官方原生地址格式 (`http://host:11434`)
+- **Ollama apiKey 对齐**: 从 `ollama` 改为官方默认值 `ollama-local`
+- **启动自动迁移**: `sync_uci_to_json` 自动将旧版 Ollama 配置迁移到 v2026.3.2 格式
+
+#### 改进
+- 配置管理页面移除「菜单功能说明」信息框，减少视觉干扰
+- `OC_TESTED_VERSION` 更新至 `2026.3.2`
+
 ## [1.0.3] - 2026-03-05
 
 ### 修复

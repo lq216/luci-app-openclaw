@@ -731,13 +731,12 @@ configure_model() {
 							http://*|https://*) ollama_url="${ollama_host}" ;;
 							*) ollama_url="http://${ollama_host}" ;;
 						esac
-						# 去掉尾部斜杠，补上 /v1
+						# v2026.3.2: Ollama 使用原生 API，baseUrl 不带 /v1
 						ollama_url=$(echo "$ollama_url" | sed 's|/v1/*$||;s|/*$||')
-						ollama_url="${ollama_url}/v1"
 					fi
 					;;
 				*)
-					ollama_url="http://127.0.0.1:11434/v1"
+					ollama_url="http://127.0.0.1:11434"
 					;;
 			esac
 			if [ -n "$ollama_url" ]; then
@@ -795,9 +794,9 @@ configure_model() {
 				fi
 				if [ -n "$model_name" ]; then
 					# Ollama 无需 API Key，使用占位符
-					auth_set_apikey ollama "ollama" "ollama:local"
-					# Ollama 兼容 OpenAI chat completions 格式
-					_RCP_PROV="ollama" _RCP_URL="$ollama_url" _RCP_KEY="ollama" _RCP_MID="$model_name" _RCP_MNAME="$model_name" "$NODE_BIN" -e "
+					auth_set_apikey ollama "ollama-local" "ollama:local"
+					# v2026.3.2: Ollama 使用原生 ollama API，不再走 OpenAI 兼容层
+					_RCP_PROV="ollama" _RCP_URL="$ollama_url" _RCP_KEY="ollama-local" _RCP_MID="$model_name" _RCP_MNAME="$model_name" "$NODE_BIN" -e "
 						const fs=require('fs');
 						let d={};
 						try{d=JSON.parse(fs.readFileSync('${CONFIG_FILE}','utf8'));}catch(e){}
@@ -807,7 +806,7 @@ configure_model() {
 						d.models.providers['ollama']={
 							baseUrl:process.env._RCP_URL,
 							apiKey:process.env._RCP_KEY,
-							api:'openai-chat-completions',
+							api:'ollama',
 							models:[{
 								id:process.env._RCP_MID,
 								name:process.env._RCP_MNAME,
@@ -1218,6 +1217,34 @@ health_check() {
 	local gw_port=$(json_get gateway.port)
 	gw_port=${gw_port:-18789}
 
+	# ── v2026.3.2: 使用官方 config validate 验证配置 ──
+	if command -v openclaw >/dev/null 2>&1 || [ -n "$OC_ENTRY" ]; then
+		echo -e "  ${CYAN}验证配置文件格式...${NC}"
+		local validate_out=""
+		validate_out=$(oc_cmd config validate --json 2>/dev/null) || true
+		if [ -n "$validate_out" ]; then
+			local has_errors=$("$NODE_BIN" -e "
+				try{const r=JSON.parse(process.argv[1]);
+				if(r.valid===true){console.log('OK');}
+				else if(r.errors&&r.errors.length>0){r.errors.forEach(e=>console.log('ERR:'+e.message));}
+				else{console.log('OK');}}catch(e){console.log('SKIP');}
+			" "$validate_out" 2>/dev/null)
+			if [ "$has_errors" = "OK" ]; then
+				echo -e "  ${GREEN}✅ 配置文件格式有效${NC}"
+			elif [ "$has_errors" = "SKIP" ]; then
+				echo -e "  ${YELLOW}⚠️  无法解析验证结果，跳过${NC}"
+			else
+				echo -e "  ${RED}❌ 配置文件存在错误:${NC}"
+				echo "$has_errors" | while IFS= read -r line; do
+					echo -e "     ${YELLOW}• ${line#ERR:}${NC}"
+				done
+			fi
+		else
+			echo -e "  ${YELLOW}⚠️  config validate 不可用，跳过格式验证${NC}"
+		fi
+		echo ""
+	fi
+
 	# ── 自动修复: 移除旧版错误写入的顶层 models.xxx 无效键 ──
 	if [ -f "$CONFIG_FILE" ]; then
 		local has_bad_models=$("$NODE_BIN" -e "
@@ -1260,6 +1287,19 @@ health_check() {
 		echo -e "  ${GREEN}✅ HTTP 响应正常 (${http_code})${NC}"
 	else
 		echo -e "  ${RED}❌ HTTP 响应异常 (${http_code})${NC}"
+	fi
+
+	# v2026.3.2: 使用 gateway health --json 做深度健康检查 (HTTP /health 已被 SPA 接管)
+	local health_resp=$(oc_cmd gateway health --json 2>/dev/null)
+	if [ -n "$health_resp" ]; then
+		local health_ok=$("$NODE_BIN" -e "try{const h=JSON.parse(process.argv[1]);console.log(h.ok?'ok':'fail');}catch(e){console.log('parse_error');}" "$health_resp" 2>/dev/null)
+		if [ "$health_ok" = "ok" ]; then
+			echo -e "  ${GREEN}✅ Gateway 健康检查正常${NC}"
+		elif [ "$health_ok" = "parse_error" ]; then
+			echo -e "  ${YELLOW}⚠️  Gateway 健康检查响应无法解析${NC}"
+		else
+			echo -e "  ${YELLOW}⚠️  Gateway 健康检查异常${NC}"
+		fi
 	fi
 
 	if [ -f "$CONFIG_FILE" ]; then
@@ -1406,9 +1446,9 @@ reset_to_defaults() {
 				local _node_bin
 				_node_bin=$(which node 2>/dev/null || echo "$NODE_BIN")
 				if command -v timeout >/dev/null 2>&1; then
-					timeout 10 sh -c "\"$_node_bin\" \"$OC_ENTRY\" onboard --non-interactive --accept-risk" >/dev/null 2>&1 || true
+					timeout 10 sh -c "\"$_node_bin\" \"$OC_ENTRY\" onboard --non-interactive --accept-risk --tools-profile coding" >/dev/null 2>&1 || true
 				else
-					"$_node_bin" "$OC_ENTRY" onboard --non-interactive --accept-risk >/dev/null 2>&1 &
+					"$_node_bin" "$OC_ENTRY" onboard --non-interactive --accept-risk --tools-profile coding >/dev/null 2>&1 &
 					local _ob_pid=$!
 					sleep 10
 					kill "$_ob_pid" 2>/dev/null || true
@@ -1428,6 +1468,8 @@ reset_to_defaults() {
 				json_set gateway.controlUi.dangerouslyDisableDeviceAuth true
 				json_set gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback true
 				json_set gateway.tailscale.mode off
+				json_set acp.dispatch.enabled false
+				json_set tools.profile coding
 
 				# 同步 token 到 UCI
 				. /lib/functions.sh 2>/dev/null || true
